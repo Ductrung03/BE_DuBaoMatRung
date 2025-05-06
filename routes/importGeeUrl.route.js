@@ -74,7 +74,7 @@ router.post("/", async (req, res) => {
 
     const tableExists = checkExist.rows[0].exists;
     const shp2pgsqlFlag = tableExists ? "-a -s 4326" : "-c -I -s 4326";
-
+//a
     const importCmd =
   `PGPASSWORD=${process.env.PGPASSWORD} shp2pgsql -a -s 4326 "${fullShpPath}" ${TABLE_NAME} | ` +
   `psql "host=${process.env.PGHOST} port=${process.env.PGPORT} dbname=${process.env.PGDATABASE} user=${process.env.PGUSER} sslmode=require"`;
