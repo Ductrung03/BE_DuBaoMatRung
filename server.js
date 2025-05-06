@@ -32,7 +32,24 @@ app.use("/api/mat-rung", matRungRoutes);
 app.use("/api/dropdown", dataDropdownRoutes);
 app.use("/api/quan-ly-du-lieu", quanlydulieu);
 app.use("/api/bao-cao", baocao);
-
+app.get('/api/test-db', async (req, res) => {
+  try {
+    const pool = require("./db");
+    const result = await pool.query('SELECT NOW()');
+    res.json({
+      success: true,
+      message: "Kết nối database thành công",
+      timestamp: result.rows[0].now
+    });
+  } catch (error) {
+    console.error("❌ Lỗi kết nối DB:", error.message);
+    res.status(500).json({
+      success: false,
+      message: "Lỗi kết nối database",
+      error: error.message
+    });
+  }
+});
 app.get("/", (req, res) => {
   res.send("✅ Backend Geo API đang hoạt động");
 });
