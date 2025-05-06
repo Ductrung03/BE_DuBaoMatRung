@@ -1,11 +1,37 @@
+/**
+ * @swagger
+ * /api/import-gee-url:
+ *   post:
+ *     tags:
+ *       - Shapefile
+ *     summary: Nhập dữ liệu từ Google Earth Engine URL và xử lý
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               zipUrl:
+ *                 type: string
+ *               tableName:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Nhập dữ liệu thành công
+ */
+
+require("dotenv").config();
 const express = require("express");
 const router = express.Router();
 const axios = require("axios");
 const fs = require("fs");
 const AdmZip = require("adm-zip");
+const util = require("util");
+const exec = util.promisify(require("child_process").exec);
 const path = require("path");
-const ogr2ogr = require("ogr2ogr");
-require("dotenv").config();
+const { Pool } = require("pg");
+const pool = new Pool();
 
 const TABLE_NAME = "mat_rung";
 
@@ -35,60 +61,52 @@ router.post("/", async (req, res) => {
     if (!shpFile) throw new Error("Không tìm thấy file SHP.");
     const fullShpPath = path.join(extractPath, shpFile);
 
-    // Cấu hình import bằng ogr2ogr
-    const ogr = ogr2ogr(fullShpPath)
-      .format("PostgreSQL")
-      .destination(
-        `PG:host=${process.env.PGHOST} user=${process.env.PGUSER} password=${process.env.PGPASSWORD} dbname=${process.env.PGDATABASE} sslmode=require`
-      )
-      .options(["-nln", TABLE_NAME, "-append"]);
+    const checkExist = await pool.query(
+      `
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_name = $1
+      );
+    `,
+      [TABLE_NAME]
+    );
 
-    // Thực thi import
-    ogr.exec(async (err) => {
-      if (err) {
-        console.error("❌ Lỗi import bằng ogr2ogr:", err);
-        return res.status(500).json({ message: err.message });
-      }
+    const tableExists = checkExist.rows[0].exists;
+    const shp2pgsqlFlag = tableExists ? "-a -s 4326" : "-c -I -s 4326";
 
-      console.log("✅ Import bằng ogr2ogr thành công!");
+    const importCmd =
+  `PGPASSWORD=${process.env.PGPASSWORD} shp2pgsql -a -s 4326 "${fullShpPath}" ${TABLE_NAME} | ` +
+  `psql "host=${process.env.PGHOST} port=${process.env.PGPORT} dbname=${process.env.PGDATABASE} user=${process.env.PGUSER} sslmode=require"`;
 
-      // Truy vấn GeoJSON từ PostGIS
-      const { Pool } = require("pg");
-      const pool = new Pool({
-        host: process.env.PGHOST,
-        port: process.env.PGPORT,
-        user: process.env.PGUSER,
-        password: process.env.PGPASSWORD,
-        database: process.env.PGDATABASE,
-        ssl: { rejectUnauthorized: false },
-      });
 
-      const geojsonQuery = `
-        SELECT json_build_object(
-          'type', 'FeatureCollection',
-          'features', json_agg(
-            json_build_object(
-              'type', 'Feature',
-              'geometry', ST_AsGeoJSON(ST_Transform(geom, 4326))::json,
-              'properties', to_jsonb(t) - 'geom'
-            )
+    console.log("📥 Import vào PostgreSQL...");
+    await exec(importCmd);
+    console.log("✅ Import thành công!");
+
+    const geojsonQuery = `
+      SELECT json_build_object(
+        'type', 'FeatureCollection',
+        'features', json_agg(
+          json_build_object(
+            'type', 'Feature',
+            'geometry', ST_AsGeoJSON(ST_Transform(geom, 4326))::json,
+            'properties', to_jsonb(t) - 'geom'
           )
         )
-        FROM ${TABLE_NAME} AS t;
-      `;
+      )
+      FROM ${TABLE_NAME} AS t;
+    `;
+    const result = await pool.query(geojsonQuery);
+    const geojson = result.rows[0].json_build_object;
 
-      const result = await pool.query(geojsonQuery);
-      const geojson = result.rows[0].json_build_object;
+    fs.unlinkSync(zipPath);
+    fs.rmSync(extractPath, { recursive: true });
 
-      // Xoá file tạm
-      fs.unlinkSync(zipPath);
-      fs.rmSync(extractPath, { recursive: true });
-
-      res.json({
-        message: "✅ Tải, import và trả về GeoJSON thành công!",
-        table: TABLE_NAME,
-        geojson,
-      });
+    res.json({
+      message: "✅ Tải và import vào PostgreSQL thành công!",
+      table: TABLE_NAME,
+      geojson,
     });
   } catch (err) {
     console.error("❌ Lỗi tổng quát:", err);
